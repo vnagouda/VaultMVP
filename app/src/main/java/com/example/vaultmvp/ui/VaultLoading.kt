@@ -10,13 +10,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -27,25 +22,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
+/**
+ * Label-less animated vault dial. Screens show their own titles
+ * (Encrypting…, Restoring…, Opening…) outside this composable.
+ */
 @Composable
 fun VaultLoading(
     modifier: Modifier = Modifier,
     diameter: Dp = 200.dp,
-    brand: Color = MaterialTheme.colorScheme.primary,
-    label: String? = null,          // <-- NEW: optional text (e.g., "Encrypting", "Restoring", etc.)
-    animateDots: Boolean = true     // <-- NEW: control the trailing dots animation
+    brand: Color = MaterialTheme.colorScheme.primary
 ) {
     val infinite = rememberInfiniteTransition(label = "vaultInfinite")
 
-    // Animations
     val dialRotation by infinite.animateFloat(
         initialValue = 0f, targetValue = 360f,
         animationSpec = infiniteRepeatable(tween(1600, easing = LinearEasing), RepeatMode.Restart),
@@ -61,15 +55,6 @@ fun VaultLoading(
         animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing), RepeatMode.Restart),
         label = "sweep"
     )
-
-    // Optional "…dots" only if a label is provided
-    var tick by remember { mutableStateOf(0) }
-    LaunchedEffect(label, animateDots) {
-        if (label != null && animateDots) {
-            while (true) { delay(350); tick = (tick + 1) % 4 }
-        }
-    }
-    val dots = if (label != null && animateDots) ".".repeat(tick) else ""
 
     val scheme = MaterialTheme.colorScheme
     val ringBg = scheme.surfaceVariant.copy(alpha = 0.7f)
@@ -154,16 +139,6 @@ fun VaultLoading(
                 radius = m * (0.20f * glow),
                 center = center,
                 style = Stroke(width = m * 0.02f)
-            )
-        }
-
-        // Only show text if the caller asked for it
-        if (label != null) {
-            Text(
-                text = "$label$dots",
-                color = scheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
     }

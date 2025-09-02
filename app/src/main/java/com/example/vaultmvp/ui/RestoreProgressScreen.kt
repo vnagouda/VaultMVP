@@ -3,6 +3,7 @@ package com.example.vaultmvp.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,7 +29,6 @@ fun RestoreProgressScreen(
                     onCancel = { vm.requestCancelExport() }
                 )
             }
-
             ExportPhase.Finalizing -> {
                 EncryptProgressOverlay(
                     title = "Finalizing restore…",
@@ -36,56 +36,40 @@ fun RestoreProgressScreen(
                     onCancel = { vm.requestCancelExport() }
                 )
             }
-
             ExportPhase.Success -> {
-                // Show tick, then POP. Clear state after the screen actually leaves.
                 SuccessOverlay(show = true, onFinished = { /* no-op */ })
-
                 LaunchedEffect(export.phase) {
-                    kotlinx.coroutines.delay(900)  // small pause for tick
-                    onBackToHome()                 // 👈 pop first
+                    delay(900)
+                    onBackToHome()
                 }
-                androidx.compose.runtime.DisposableEffect(Unit) {
-                    onDispose { vm.clearExportUi() }  // 👈 clear AFTER we've left
+                DisposableEffect(Unit) {
+                    onDispose { vm.clearExportUi() }
                 }
             }
-
             ExportPhase.Cancelled -> {
                 CancelOverlay(show = true, onFinished = { /* no-op */ })
-
-                LaunchedEffect(export.phase) {
-                    kotlinx.coroutines.delay(400)
-                    onBackToHome()                 // 👈 pop first
-                }
-                androidx.compose.runtime.DisposableEffect(Unit) {
+                LaunchedEffect(export.phase) { delay(400); onBackToHome() }
+                DisposableEffect(Unit) {
                     onDispose { vm.clearExportUi() }
                 }
             }
-
             ExportPhase.Error -> {
                 FailureOverlay(show = true, onFinished = { /* no-op */ })
-
-                LaunchedEffect(export.phase) {
-                    kotlinx.coroutines.delay(800)
-                    onBackToHome()                 // 👈 pop first
-                }
-                androidx.compose.runtime.DisposableEffect(Unit) {
+                LaunchedEffect(export.phase) { delay(800); onBackToHome() }
+                DisposableEffect(Unit) {
                     onDispose { vm.clearExportUi() }
                 }
             }
-
             ExportPhase.Idle -> {
-                // Idle has two meanings:
-                // 1) BEFORE user picks a dest (pre-pick) -> show a 'waiting' placeholder.
-                // 2) AFTER finish (state reset) -> we should not be here; just bail out.
+                // If we reached here pre-pick, show waiting; if post-finish, bounce home.
                 if (export.fileName == null) {
                     EncryptProgressOverlay(
                         title = "Waiting for destination…",
                         progress = null,
-                        onCancel = { /* picker is up; ignore */ }
+                        onCancel = { /* ignore while picker active */ }
                     )
                 } else {
-                    LaunchedEffect(Unit) { onBackToHome() }   // defensive: if Idle shows with a filename, leave
+                    LaunchedEffect(Unit) { onBackToHome() }
                 }
             }
         }

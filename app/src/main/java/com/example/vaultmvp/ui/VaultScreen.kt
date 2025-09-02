@@ -1,16 +1,46 @@
+// VaultScreen.kt
 package com.example.vaultmvp.ui
 
+import android.util.Log
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -19,258 +49,231 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.vaultmvp.data.VaultItem
-import com.example.vaultmvp.vm.ImportPhase
-import com.example.vaultmvp.vm.ImportUi
+import com.example.vaultmvp.util.LOG_TAG
 import com.example.vaultmvp.vm.VaultViewModel
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile as AutoMirroredInsertDriveFile
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun VaultScreen(
     vm: VaultViewModel,
     onPickFiles: () -> Unit,
     onRestore: (VaultItem) -> Unit,
-    onOpenItem: (VaultItem) -> Unit   // <— new: navigate to viewer route
+    onOpenItem: (VaultItem) -> Unit
 ) {
-    val activity = LocalContext.current as FragmentActivity
-    val state by vm.ui.collectAsStateWithLifecycle()
+    // NOTE: No biometric logic here. MainActivity handles it + shows the PrivacyShield.
+    val state = vm.ui.collectAsStateWithLifecycle().value
 
-    // Require auth only when entering the vault (or after idle lock)
-    LaunchedEffect(state.unlocked) {
-        if (!state.unlocked) {
-            promptBiometric(
-                activity = activity,
-                title = "Unlock Vault",
-                onSuccess = { vm.setUnlocked(true) },
-                onError = { /* optionally show snackbar */ }
-            )
-        }
-    }
+    var query by remember { mutableStateOf("") }
+    var searchOpen by remember { mutableStateOf(false) }
+    var filter by remember { mutableStateOf(Filter.All) }
 
-    if (!state.unlocked) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Vault locked")
+    val filtered = remember(state.items, query, filter) {
+        state.items.filter { item ->
+            val matchesQ = query.isBlank() || item.displayName.contains(query, ignoreCase = true)
+            val matchesF = when (filter) {
+                Filter.All    -> true
+                Filter.Images -> item.mime.startsWith("image/")
+                Filter.Videos -> item.mime.startsWith("video/")
+                Filter.Docs   -> !(item.mime.startsWith("image/") || item.mime.startsWith("video/"))
+            }
+            matchesQ && matchesF
         }
-        return
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("VaultMvp") }) },
+        topBar = {
+            LargeTopAppBar(
+                title = {
+                    Column {
+                        Text("Vault", style = MaterialTheme.typography.headlineMedium)
+                        if (!searchOpen) {
+                            Text(
+                                if (state.unlocked) "Unlocked" else "Locked",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                },
+                navigationIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Lock,
+                        contentDescription = null,
+                        tint = if (state.unlocked)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                actions = {
+                    IconButton(onClick = { searchOpen = !searchOpen }) {
+                        Icon(Icons.Filled.Search, contentDescription = "Search")
+                    }
+                    IconButton(onClick = { /* TODO menu */ }) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Menu")
+                    }
+                }
+            )
+        },
         floatingActionButton = {
-            FloatingActionButton(onClick = onPickFiles) { Text("+") }
+            FloatingActionButton(
+                onClick = onPickFiles,
+                modifier = Modifier.navigationBarsPadding()
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = "Import")
+            }
         }
     ) { pad ->
-        // Use a Box so overlays can sit on top of the list
-        Box(
-            Modifier
+        Column(
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(pad)
+                .padding(horizontal = 16.dp)
         ) {
-            // Main content (list + rename dialog)
-            Column(Modifier.fillMaxSize().padding(12.dp)) {
-                var renamingFor by remember { mutableStateOf<VaultItem?>(null) }
-                var newName by remember { mutableStateOf("") }
+            // Search
+            if (searchOpen) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.large),
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, null) },
+                    placeholder = { Text("Search files") }
+                )
+                Spacer(Modifier.height(12.dp))
+            }
 
-                LazyColumn(Modifier.weight(1f)) {
-                    items(state.items) { item ->
-                        VaultRow(
+            // Filters
+            FilterChipsRow(
+                selected = filter,
+                onSelected = { filter = it }
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            if (filtered.isEmpty()) {
+                EmptyState(onPickFiles = onPickFiles)
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 140.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 96.dp)
+                ) {
+                    items(filtered, key = { it.id }) { item ->
+                        ItemCard(
                             item = item,
-                            onOpen = {
-                                promptBiometric(
-                                    activity,
-                                    "Open ${item.displayName}",
-                                    onSuccess = { onOpenItem(item) },
-                                    onError = { /* no-op */ }
-                                )
-                            },
-                            onRename = { current ->
-                                renamingFor = item
-                                newName = current
-                            },
+                            onOpen = { onOpenItem(item) },
                             onRestore = { onRestore(item) }
                         )
                     }
                 }
-
-                if (renamingFor != null) {
-                    androidx.compose.material3.AlertDialog(
-                        onDismissRequest = { renamingFor = null },
-                        title = { Text("Rename") },
-                        text = {
-                            androidx.compose.material3.OutlinedTextField(
-                                value = newName,
-                                onValueChange = { newName = it },
-                                singleLine = true
-                            )
-                        },
-                        confirmButton = {
-                            androidx.compose.material3.TextButton(onClick = {
-                                val trimmed = newName.trim()
-                                if (trimmed.isNotEmpty()) vm.rename(renamingFor!!.id, trimmed)
-                                renamingFor = null
-                            }) { Text("Save") }
-                        },
-                        dismissButton = {
-                            androidx.compose.material3.TextButton(onClick = { renamingFor = null }) { Text("Cancel") }
-                        }
-                    )
-                }
-            }
-
-            // ---- OVERLAYS (drawn on top) ----
-            when (state.import.phase) {
-                ImportPhase.Encrypting -> {
-                    ImportOverlay(
-                        import = state.import,
-                        onCancel = { vm.requestCancelEncryption() },
-                        onDismissAfterResult = { /* VM will reset to Idle; nothing needed */ }
-                    )
-                }
-                ImportPhase.Finalizing -> {
-                    ImportOverlay(
-                        import = state.import,
-                        onCancel = { vm.requestCancelEncryption() },
-                        onDismissAfterResult = { /* VM will reset to Idle; nothing needed */ }
-                    )
-                }
-                ImportPhase.Success -> {
-                    SuccessOverlay(show = true, onFinished = { /* VM resets; nothing needed */ })
-                }
-                ImportPhase.Cancelled -> {
-                    FailureOverlay(show = true, onFinished = { /* VM resets; nothing needed */ })
-                }
-                ImportPhase.Error,
-                ImportPhase.Idle -> Unit
             }
         }
     }
+}
 
+private enum class Filter { All, Images, Videos, Docs }
+
+@Composable
+private fun FilterChipsRow(
+    selected: Filter,
+    onSelected: (Filter) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        AssistChip(selected == Filter.All, "All") { onSelected(Filter.All) }
+        AssistChip(selected == Filter.Images, "Images") { onSelected(Filter.Images) }
+        AssistChip(selected == Filter.Videos, "Videos") { onSelected(Filter.Videos) }
+        AssistChip(selected == Filter.Docs, "Docs") { onSelected(Filter.Docs) }
+    }
 }
 
 @Composable
-private fun VaultRow(
+private fun AssistChip(selected: Boolean, label: String, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) }
+    )
+}
+
+@Composable
+private fun EmptyState(onPickFiles: () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            VaultLoading(diameter = 120.dp) // subtle decorative dial
+            Spacer(Modifier.height(12.dp))
+            Text("Secure your files with one tap.", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            Button(onClick = onPickFiles) { Text("Import files") }
+        }
+    }
+}
+
+@Composable
+private fun ItemCard(
     item: VaultItem,
     onOpen: () -> Unit,
-    onRename: (String) -> Unit,
     onRestore: () -> Unit
 ) {
-    Column {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clickable { onOpen() }
-                .padding(vertical = 10.dp)
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(item.displayName, style = MaterialTheme.typography.titleMedium)
-                Text("${item.mime} • ${item.sizeBytes ?: 0} bytes", style = MaterialTheme.typography.bodySmall)
-            }
-            Row {
+    val icon = remember(item.mime) { mimeIcon(item.mime) }
+    Card(
+        onClick = {
+            Log.d(LOG_TAG, "VaultScreen: open ${item.id} ${item.displayName}")
+            onOpen()
+        }
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.size(10.dp))
                 Text(
-                    "Rename",
+                    text = item.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = item.mime,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Restore",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
-                        .padding(end = 12.dp)
-                        .clickable { onRename(item.displayName) },
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Text(
-                    "Restore",
-                    modifier = Modifier.clickable { onRestore() },
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-        HorizontalDivider()
-    }
-}
-
-@Composable
-private fun ImportOverlay(
-    import: ImportUi,
-    onCancel: () -> Unit,
-    onDismissAfterResult: () -> Unit
-) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        when (import.phase) {
-            ImportPhase.Encrypting -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    // your existing vault dial animation
-                    VaultLoading(Modifier.size(180.dp))
-
-                    Spacer(Modifier.height(16.dp))
-                    // Nice circular progress around it
-                    val p = (import.progress ?: 0f).coerceIn(0f, 1f)
-                    androidx.compose.material3.CircularProgressIndicator(
-                        progress = { p },
-                        strokeWidth = 6.dp
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(import.fileName ?: "Encrypting")
-                    if (import.progress != null) {
-                        Text("${(p * 100).toInt()}%")
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    androidx.compose.material3.TextButton(onClick = onCancel) {
-                        Text("Cancel")
-                    }
-                }
-            }
-            ImportPhase.Finalizing -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    // same dial animation you use for Encrypting
-                    VaultLoading(Modifier.size(180.dp))
-
-                    Spacer(Modifier.height(16.dp))
-
-                    // Indeterminate spinner during finalize
-                    androidx.compose.material3.CircularProgressIndicator()
-
-                    Spacer(Modifier.height(8.dp))
-                    Text("Finalizing securely…", style = MaterialTheme.typography.titleMedium)
-
-                    Spacer(Modifier.height(12.dp))
-                    androidx.compose.material3.Button(onClick = onCancel) {
-                        Text("Cancel")
-                    }
-                }
-            }
-
-
-            ImportPhase.Success -> {
-                SuccessOverlay(
-                    show = true,
-                    onFinished = onDismissAfterResult
+                        .clip(MaterialTheme.shapes.small)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                        .clickable {
+                            Log.d(LOG_TAG, "VaultScreen: restore ${item.id} ${item.displayName}")
+                            onRestore()
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 )
             }
-
-            ImportPhase.Cancelled -> {
-                FailureOverlay(
-                    show = true,
-                    onFinished = onDismissAfterResult
-                )
-            }
-
-            ImportPhase.Error -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Import failed", color = androidx.compose.ui.graphics.Color.Red)
-                    if (!import.error.isNullOrBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(import.error!!)
-                    }
-                }
-                // auto dismiss after a short delay
-                LaunchedEffect(Unit) {
-                    kotlinx.coroutines.delay(900)
-                    onDismissAfterResult()
-                }
-            }
-
-            ImportPhase.Idle -> Unit
         }
     }
 }
 
+private fun mimeIcon(mime: String): ImageVector = when {
+    mime.startsWith("image/") -> Icons.Filled.Image
+    mime.startsWith("video/") -> Icons.Filled.VideoLibrary
+    else -> Icons.AutoMirrored.Filled.InsertDriveFile
+}

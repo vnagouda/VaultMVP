@@ -3,17 +3,16 @@ package com.example.vaultmvp.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,6 +34,7 @@ fun ViewerScreen(
 
     // Start decrypt on entry
     LaunchedEffect(itemId) { item?.let { vm.openAfterAuth(it) } }
+    LaunchedEffect(itemId) { android.util.Log.d(LOG_TAG, "ViewerScreen: open itemId=$itemId") }
 
     var phase by remember { mutableStateOf(ViewPhase.Loading) }
 
@@ -47,16 +47,20 @@ fun ViewerScreen(
         }
     }
 
-    LaunchedEffect(itemId) {
-        android.util.Log.d(LOG_TAG, "ViewerScreen: open itemId=$itemId")
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(item?.displayName ?: "Viewer") },
                 navigationIcon = {
-                    TextButton(onClick = { vm.closePreview(); onBack() }) { Text("Back") }
+                    IconButton(onClick = { vm.closePreview(); onBack() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    // placeholder share action (no-op)
+                    IconButton(onClick = { /* share later if needed */ }) {
+                        Icon(Icons.Default.IosShare, contentDescription = "Share")
+                    }
                 }
             )
         }
@@ -64,11 +68,9 @@ fun ViewerScreen(
         Box(Modifier.fillMaxSize().padding(pad)) {
             when (phase) {
                 ViewPhase.Loading -> {
-                    // Show labeled, percent-based progress while decrypting for preview
-                    EncryptProgressOverlay(
-                        title = item?.displayName?.let { "Opening $it" } ?: "Opening…",
-                        progress = state.openProgress,
-                        onCancel = null
+                    // Label-less dial; title handled by app bar
+                    VaultLoading(
+                        modifier = Modifier.fillMaxSize().align(Alignment.Center)
                     )
                 }
                 ViewPhase.SuccessAnim -> {
@@ -77,18 +79,10 @@ fun ViewerScreen(
                 ViewPhase.Content -> {
                     when (val p = state.preview) {
                         is Preview.ImageFile -> ImageFileViewer(p.file)
-                        is Preview.Image     -> ImageViewer(p.bytes) // fallback path
+                        is Preview.Image     -> ImageViewer(p.bytes)
                         is Preview.Pdf       -> PdfViewer(p.file)
                         is Preview.Video     -> VideoPlayer(p.file)
-                        is Preview.Unsupported -> Text("Unsupported", Modifier.align(Alignment.Center))
-                        null -> {
-                            phase = ViewPhase.Loading
-                            EncryptProgressOverlay(
-                                title = item?.displayName?.let { "Opening $it" } ?: "Opening…",
-                                progress = state.openProgress,
-                                onCancel = null
-                            )
-                        }
+                        is Preview.Unsupported, null -> Text("Unsupported", Modifier.align(Alignment.Center))
                     }
                 }
             }

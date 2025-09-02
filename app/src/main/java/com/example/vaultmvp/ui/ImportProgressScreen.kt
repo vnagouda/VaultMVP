@@ -19,7 +19,6 @@ fun ImportProgressScreen(
     val import = state.import
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-
         when (import.phase) {
             ImportPhase.Encrypting -> {
                 EncryptProgressOverlay(
@@ -28,7 +27,6 @@ fun ImportProgressScreen(
                     onCancel = { vm.requestCancelEncryption() }
                 )
             }
-
             ImportPhase.Finalizing -> {
                 EncryptProgressOverlay(
                     title = "Finalizing securely…",
@@ -36,57 +34,29 @@ fun ImportProgressScreen(
                     onCancel = { vm.requestCancelEncryption() }
                 )
             }
-
             ImportPhase.Success -> {
                 SuccessOverlay(show = true, onFinished = { /* no-op */ })
-
-                // 👇 run once when we enter Success
-                LaunchedEffect(import.phase) {
-                    kotlinx.coroutines.delay(900)
-                    onBackToHome()           // pop first
-                }
-                // 👇 clear AFTER we've left this screen
-                androidx.compose.runtime.DisposableEffect(Unit) {
-                    onDispose { vm.clearImportUi() }
+                LaunchedEffect(Unit) {
+                    delay(900)
+                    vm.clearImportUi()
+                    onBackToHome()
                 }
             }
-
             ImportPhase.Cancelled -> {
-                CancelOverlay(show = true, onFinished = { /* no-op */ })
-                LaunchedEffect(import.phase) {
-                    kotlinx.coroutines.delay(400)
+                CancelOverlay(show = true, onFinished = {
+                    vm.clearImportUi()
                     onBackToHome()
-                }
-                androidx.compose.runtime.DisposableEffect(Unit) {
-                    onDispose { vm.clearImportUi() }
-                }
+                })
             }
-
             ImportPhase.Error -> {
-                FailureOverlay(show = true, onFinished = { /* no-op */ })
-                LaunchedEffect(import.phase) {
-                    kotlinx.coroutines.delay(800)
+                FailureOverlay(show = true, onFinished = {
+                    vm.clearImportUi()
                     onBackToHome()
-                }
-                androidx.compose.runtime.DisposableEffect(Unit) {
-                    onDispose { vm.clearImportUi() }
-                }
+                })
             }
-
             ImportPhase.Idle -> {
-                // If we navigated to ImportProgress before the picker result,
-                // show a gentle placeholder. If we’re here post-finish, just exit.
-                if (import.fileName == null) {
-                    EncryptProgressOverlay(
-                        title = "Waiting for selection…",
-                        progress = null,
-                        onCancel = { /* picker is up; ignore */ }
-                    )
-                } else {
-                    LaunchedEffect(Unit) { onBackToHome() }
-                }
+                LaunchedEffect(Unit) { onBackToHome() }
             }
         }
-
     }
 }
