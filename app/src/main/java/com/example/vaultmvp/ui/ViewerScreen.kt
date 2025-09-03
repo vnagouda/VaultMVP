@@ -42,90 +42,63 @@ private enum class ViewPhase { Loading, SuccessAnim, Content }
 
 /* ───────────────────── Orchestrator screen ───────────────────── */
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ViewerScreen(
     vm: VaultViewModel,
     itemId: String,
     onBack: () -> Unit
 ) {
-    val state = vm.ui.collectAsStateWithLifecycle().value
-    val item = remember(state.items, itemId) { state.items.find { it.id == itemId } }
+    val ui = vm.ui.collectAsStateWithLifecycle().value
+    val item = remember(ui.items, itemId) { ui.items.find { it.id == itemId } }
 
-    // Start decrypt/prepare on entry
+    // kick off decrypt+open
     LaunchedEffect(itemId) { item?.let { vm.openAfterAuth(it) } }
-
-    var phase by remember { mutableStateOf(ViewPhase.Loading) }
-
-    // Phase transitions based on preview availability
-    LaunchedEffect(state.preview) {
-        if (state.preview == null) {
-            phase = ViewPhase.Loading
-        } else if (phase != ViewPhase.Content) {
-            phase = ViewPhase.SuccessAnim
-        }
-    }
-
-    LaunchedEffect(itemId) { Log.d(LOG_TAG, "ViewerScreen: open itemId=$itemId") }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(item?.displayName ?: "Viewer") },
+            androidx.compose.material3.TopAppBar(
+                title = { androidx.compose.material3.Text(item?.displayName ?: "Viewer") },
                 navigationIcon = {
-                    TextButton(onClick = { vm.closePreview(); onBack() }) { Text("Back") }
+                    androidx.compose.material3.TextButton(onClick = { vm.closePreview(); onBack() }) {
+                        androidx.compose.material3.Text("Back")
+                    }
                 }
             )
         }
     ) { pad ->
-        Box(Modifier.fillMaxSize().padding(pad)) {
-
-            // Opening progress overlay while decrypting/streaming
-            if (state.preview == null && state.openProgress != null) {
-                EncryptProgressOverlay(
-                    title = item?.let { "Opening ${it.displayName}" } ?: "Opening…",
-                    progress = state.openProgress,
-                    onCancel = null,
-                    size = 220.dp
-                )
-            }
-
-            when (phase) {
-                ViewPhase.Loading -> {
-                    VaultLoading(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .align(Alignment.Center)
+        androidx.compose.foundation.layout.Box(
+            Modifier
+                .fillMaxSize()
+                .padding(pad),
+            contentAlignment = Alignment.Center
+        ) {
+            when (val p = ui.preview) {
+                null -> {
+                    // still opening
+                    EncryptProgressOverlay(
+                        title = item?.let { "Opening ${it.displayName}" } ?: "Opening…",
+                        progress = ui.openProgress,
+                        onCancel = null
                     )
                 }
-                ViewPhase.SuccessAnim -> {
-                    SuccessOverlay(show = true, onFinished = { phase = ViewPhase.Content })
+                is Preview.ImageFile -> {
+                    ImageFileViewer(p.file)
                 }
-                ViewPhase.Content -> {
-                    when (val p = state.preview) {
-                        is Preview.ImageFile -> ImageFileViewer(p.file)
-                        is Preview.ImageUri  -> ImageUriViewer(p.uri)      // NEW
-                        is Preview.Pdf       -> PdfViewer(p.file)
-                        is Preview.PdfUri    -> PdfViewerUri(p.uri)        // NEW
-                        is Preview.Video     -> VideoPlayer(file = p.file)
-                        is Preview.VideoUri  -> VideoPlayer(uri = p.uri)
-                        is Preview.Unsupported -> Text("Unsupported", Modifier.align(Alignment.Center))
-                        null -> {
-                            phase = ViewPhase.Loading
-                            VaultLoading(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .align(Alignment.Center)
-                            )
-                        }
-                    }
-
+                is Preview.Pdf -> {
+                    PdfViewer(p.file)
                 }
-
+                is Preview.Video -> {
+                    VideoPlayer(p.file)   // your existing player that takes a File
+                }
+                is Preview.Unsupported -> {
+                    androidx.compose.material3.Text(p.reason)
+                }
             }
         }
     }
 }
+
 
 /* ───────────────────── Helpers: secure & decoders ───────────────────── */
 

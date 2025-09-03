@@ -18,17 +18,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-// in VaultViewModel.kt
 sealed interface Preview {
     data class ImageFile(val file: File) : Preview
-    data class ImageUri(val uri: android.net.Uri) : Preview
     data class Pdf(val file: File) : Preview
-    data class PdfUri(val uri: android.net.Uri) : Preview
     data class Video(val file: File) : Preview
-    data class VideoUri(val uri: android.net.Uri) : Preview
     data class Unsupported(val reason: String) : Preview
 }
-
 
 data class ImportUi(
     val phase: ImportPhase = ImportPhase.Idle,
@@ -52,7 +47,7 @@ data class UiState(
     val preview: Preview? = null,
     val import: ImportUi = ImportUi(),
     val export: ExportUi = ExportUi(),
-    val openProgress: Float? = null          // <-- progress while opening for preview
+    val openProgress: Float? = null
 )
 
 class VaultViewModel(
@@ -62,11 +57,9 @@ class VaultViewModel(
     private val _ui = MutableStateFlow(UiState(items = repo.loadItems()))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
-    // Cancel flags
     @Volatile private var cancelEncrypt = false
     @Volatile private var cancelExport = false
 
-    // Dwell timings
     private val MIN_ENCRYPT_MS = 900L
     private val MIN_FINALIZE_MS = 700L
     private val MIN_DECRYPT_MS = 900L
@@ -76,40 +69,20 @@ class VaultViewModel(
         _ui.update { it.copy(unlocked = unlocked) }
     }
 
-    fun requestCancelEncryption() {
-        Log.d(LOG_TAG, "VM requestCancelEncryption()")
-        cancelEncrypt = true
-    }
+    fun requestCancelEncryption() { cancelEncrypt = true }
+    fun requestCancelExport() { cancelExport = true }
 
-    fun requestCancelExport() {
-        Log.d(LOG_TAG, "VM requestCancelExport()")
-        cancelExport = true
-    }
-
-    fun clearImportUi() {
-        Log.d(LOG_TAG, "VM clearImportUi()")
-        _ui.update { it.copy(import = ImportUi()) }
-    }
-
-    fun clearExportUi() {
-        Log.d(LOG_TAG, "VM clearExportUi()")
-        _ui.update { it.copy(export = ExportUi()) }
-    }
+    fun clearImportUi() { _ui.update { it.copy(import = ImportUi()) } }
+    fun clearExportUi() { _ui.update { it.copy(export = ExportUi()) } }
 
     // ---------------- Import (encrypt) ----------------
     fun importAll(uris: List<Uri>) {
-        if (uris.isEmpty()) {
-            Log.d(LOG_TAG, "VM importAll() called with 0 URIs – no-op")
-            return
-        }
-        Log.d(LOG_TAG, "VM importAll() starting, count=${uris.size}")
-
+        if (uris.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             var currentItems = repo.loadItems()
             cancelEncrypt = false
 
             uris.forEachIndexed { index, u ->
-                Log.d(LOG_TAG, "VM import file[$index/${uris.size}] uri=$u")
                 _ui.update { it.copy(import = ImportUi(phase = ImportPhase.Encrypting, fileName = "Preparing…", progress = null)) }
                 val displayName = repo.peekDisplayName(u) ?: "Encrypting file"
                 _ui.update { it.copy(import = it.import.copy(fileName = displayName)) }
@@ -141,7 +114,6 @@ class VaultViewModel(
                     if (encElapsed < MIN_ENCRYPT_MS) delay(MIN_ENCRYPT_MS - encElapsed)
 
                     if (cancelEncrypt) {
-                        Log.d(LOG_TAG, "VM import cancelled after encrypt for $displayName – rolling back")
                         added?.let { safeDelete(it.encryptedPath) }
                         _ui.update { it.copy(import = ImportUi(phase = ImportPhase.Cancelled, fileName = displayName)) }
                         delay(400); _ui.update { it.copy(import = ImportUi()) }
@@ -152,7 +124,6 @@ class VaultViewModel(
                     val finalizeStart = SystemClock.elapsedRealtime()
                     while (SystemClock.elapsedRealtime() - finalizeStart < MIN_FINALIZE_MS) {
                         if (cancelEncrypt) {
-                            Log.d(LOG_TAG, "VM import cancelled during finalizing for $displayName – rolling back")
                             added?.let { safeDelete(it.encryptedPath) }
                             _ui.update { it.copy(import = ImportUi(phase = ImportPhase.Cancelled, fileName = displayName)) }
                             delay(400); _ui.update { it.copy(import = ImportUi()) }
@@ -162,22 +133,16 @@ class VaultViewModel(
                     }
 
                     checkNotNull(added)
-                    Log.d(LOG_TAG, "VM encrypt success file=$displayName id=${added.id} size=${added.sizeBytes}")
                     currentItems = currentItems + added
                     repo.saveItems(currentItems)
                     repo.deleteOriginal(u)
-                    Log.d(LOG_TAG, "VM original deleted (best-effort) for $displayName")
 
                     _ui.update { it.copy(items = currentItems, import = ImportUi(phase = ImportPhase.Success, fileName = added.displayName, progress = 1f)) }
                     delay(600)
                     _ui.update { it.copy(import = ImportUi()) }
 
-                    if (cancelEncrypt) {
-                        Log.d(LOG_TAG, "VM import cancelled after file=$displayName")
-                        return@launch
-                    }
+                    if (cancelEncrypt) return@launch
                 } catch (_: InterruptedException) {
-                    Log.d(LOG_TAG, "VM import Interrupted for $displayName (user cancel)")
                     added?.let { safeDelete(it.encryptedPath) }
                     _ui.update { it.copy(import = ImportUi(phase = ImportPhase.Cancelled, fileName = displayName)) }
                     delay(400); _ui.update { it.copy(import = ImportUi()) }
@@ -190,16 +155,12 @@ class VaultViewModel(
                     return@launch
                 }
             }
-
-            Log.d(LOG_TAG, "VM importAll() finished – refreshing items")
             _ui.update { it.copy(items = repo.loadItems()) }
         }
     }
 
     // ---------------- Restore (export) ----------------
     fun exportToUriAndRemove(item: VaultItem, dest: Uri) {
-        Log.d(LOG_TAG, "VM exportToUriAndRemove id=${item.id} -> $dest")
-
         viewModelScope.launch(Dispatchers.IO) {
             cancelExport = false
             _ui.update { it.copy(export = ExportUi(phase = ExportPhase.Decrypting, fileName = item.displayName, progress = 0f)) }
@@ -266,35 +227,18 @@ class VaultViewModel(
             _ui.update {
                 it.copy(
                     items = itemsNow,
-                    export = ExportUi(
-                        phase = ExportPhase.Success,
-                        fileName = item.displayName,
-                        progress = 1f
-                    )
+                    export = ExportUi(phase = ExportPhase.Success, fileName = item.displayName, progress = 1f)
                 )
             }
         }
     }
 
     // ---------------- Open (preview) with progress ----------------
-    // VaultViewModel.kt (inside class)
-    // inside class VaultViewModel
-    private val STREAM_THRESHOLD = 25L * 1024 * 1024  // 25 MB
-
     fun openAfterAuth(item: VaultItem) {
         Log.d(LOG_TAG, "VM openAfterAuth id=${item.id} name=${item.displayName} mime=${item.mime}")
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Fast path: big videos stream directly via ContentProvider
-                val size = item.sizeBytes
-                if (item.mime.startsWith("video/") && size != null && size >= STREAM_THRESHOLD) {
-                    val uri = repo.streamingUriFor(item.id)
-                    _ui.update { it.copy(preview = Preview.VideoUri(uri), openProgress = null) }
-                    return@launch
-                }
-
-                // Default path: decrypt to a temp file with progress (images, pdfs, small videos)
-                _ui.update { it.copy(openProgress = 0f) }
+                _ui.update { it.copy(openProgress = 0f, preview = null) }
                 val startAt = SystemClock.elapsedRealtime()
                 var lastBucket = -1
 
@@ -325,10 +269,10 @@ class VaultViewModel(
                 val preview = when {
                     item.mime.startsWith("image/") -> Preview.ImageFile(file)
                     item.mime == "application/pdf" -> Preview.Pdf(file)
-                    item.mime.startsWith("video/") -> Preview.Video(file) // small video temp-file path
+                    item.mime.startsWith("video/") -> Preview.Video(file)
                     else -> Preview.Unsupported("Office preview not supported in MVP")
                 }
-                _ui.update { it.copy(preview = preview, openProgress = 1f) }
+                _ui.update { it.copy(preview = preview, openProgress = null) }
             } catch (t: Throwable) {
                 Log.e(LOG_TAG, "VM openAfterAuth decrypt failed", t)
                 _ui.update { it.copy(preview = Preview.Unsupported("Failed to open: ${t.message}"), openProgress = null) }
@@ -336,14 +280,12 @@ class VaultViewModel(
         }
     }
 
-
-
     fun closePreview() {
         Log.d(LOG_TAG, "VM closePreview()")
         (_ui.value.preview as? Preview.ImageFile)?.file?.delete()
         (_ui.value.preview as? Preview.Pdf)?.file?.delete()
         (_ui.value.preview as? Preview.Video)?.file?.delete()
-        _ui.update { it.copy(preview = null, openProgress = null) }   // clear progress too
+        _ui.update { it.copy(preview = null, openProgress = null) }
     }
 
     fun lock() {

@@ -6,7 +6,6 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
 import com.example.vaultmvp.crypto.VaultCrypto
-import com.example.vaultmvp.provider.DecryptProvider
 import com.example.vaultmvp.util.LOG_TAG
 import java.io.*
 import java.util.UUID
@@ -14,10 +13,6 @@ import javax.crypto.Cipher
 import javax.crypto.CipherInputStream
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-
-private const val BUFFER_SIZE = 256 * 1024 // 256KB
-private const val GCM_TAG_BITS = 128
-private const val IV_LEN = 12
 
 class VaultRepo(private val context: Context) {
 
@@ -39,18 +34,6 @@ class VaultRepo(private val context: Context) {
         }
     }
 
-    fun streamingUriFor(itemId: String): Uri =
-        DecryptProvider.contentUriFor(context, itemId)
-
-    fun renameItem(itemId: String, newName: String): List<VaultItem> {
-        Log.d(LOG_TAG, "Repo.renameItem: id=$itemId -> \"$newName\"")
-        val list = loadItems().map { item ->
-            if (item.id == itemId) item.copy(displayName = newName) else item
-        }
-        saveItems(list)
-        return list
-    }
-
     fun saveItems(items: List<VaultItem>) {
         Log.d(LOG_TAG, "Repo.saveItems: saving count=${items.size}")
         try {
@@ -60,6 +43,57 @@ class VaultRepo(private val context: Context) {
             Log.e(LOG_TAG, "Repo.saveItems: error", t)
             throw t
         }
+    }
+
+    // Counts bytes read from the encrypted source so we can report progress,
+// even if the cipher hasn’t produced plaintext yet.
+    private class CountingInputStream(
+        private val upstream: InputStream,
+        private val onCountChanged: (Long) -> Unit
+    ) : InputStream() {
+        var count: Long = 0
+            private set
+
+        override fun read(): Int {
+            val r = upstream.read()
+            if (r >= 0) {
+                count += 1
+                onCountChanged(count)
+            }
+            return r
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            val n = upstream.read(b, off, len)
+            if (n > 0) {
+                count += n
+                onCountChanged(count)
+            }
+            return n
+        }
+
+        override fun skip(n: Long): Long {
+            val s = upstream.skip(n)
+            if (s > 0) {
+                count += s
+                onCountChanged(count)
+            }
+            return s
+        }
+
+        override fun available(): Int = upstream.available()
+        override fun close() = upstream.close()
+        override fun mark(readlimit: Int) = upstream.mark(readlimit)
+        override fun reset() = upstream.reset()
+        override fun markSupported(): Boolean = upstream.markSupported()
+    }
+
+
+    fun renameItem(itemId: String, newName: String): List<VaultItem> {
+        Log.d(LOG_TAG, "Repo.renameItem: id=$itemId -> \"$newName\"")
+        val list = loadItems().map { if (it.id == itemId) it.copy(displayName = newName) else it }
+        saveItems(list)
+        return list
     }
 
     fun peekDisplayName(uri: Uri): String? {
@@ -88,25 +122,24 @@ class VaultRepo(private val context: Context) {
         Log.d(LOG_TAG, "Repo.importAndEncrypt: id=$id name=$name size=$size mime=$mime dest=${outFile.absolutePath}")
 
         try {
+            // inside importAndEncrypt(...)
             context.contentResolver.openInputStream(uri).use { input ->
-                FileOutputStream(outFile).use { output ->
-                    requireNotNull(input) { "Unable to open input stream for $uri" }
-                    // VaultCrypto has buffered streams inside now
+                FileOutputStream(outFile).use { fileOut ->
+                    requireNotNull(input)
+                    val inBuf = BufferedInputStream(input, 512 * 1024)
+                    val outBuf = BufferedOutputStream(fileOut, 512 * 1024)
                     VaultCrypto.encryptStream(
-                        input = input,
-                        output = output,
+                        input = inBuf,
+                        output = outBuf,
                         key = key,
                         totalBytes = size,
-                        onProgress = { p ->
-                            if (p.isFinite()) onProgress?.invoke(p)
-                            if (p.isFinite() && (p == 1f || p >= 0.9f || p <= 0.1f)) {
-                                Log.d(LOG_TAG, "Repo.importAndEncrypt: progress=${"%.0f".format(p * 100)}% id=$id")
-                            }
-                        },
+                        onProgress = { p -> /* unchanged */ },
                         isCancelled = { isCancelled?.invoke() ?: false }
                     )
+                    outBuf.flush()
                 }
             }
+
         } catch (e: InterruptedException) {
             Log.w(LOG_TAG, "Repo.importAndEncrypt: cancelled id=$id, cleaning partial file", e)
             if (outFile.exists()) outFile.delete()
@@ -143,45 +176,52 @@ class VaultRepo(private val context: Context) {
     ): Boolean {
         Log.d(LOG_TAG, "Repo.exportToUriAndRemove: begin id=${item.id} dest=$dest")
 
-        val cipherFile = File(item.encryptedPath)
-        if (!cipherFile.exists()) {
-            Log.e(LOG_TAG, "Repo.exportToUriAndRemove: missing encrypted file ${cipherFile.absolutePath}")
+        val encFile = File(item.encryptedPath)
+        if (!encFile.exists()) {
+            Log.e(LOG_TAG, "Repo.exportToUriAndRemove: missing encrypted file ${encFile.absolutePath}")
             return false
         }
 
-        val totalPlain = item.sizeBytes
-        var copied = 0L
+        val totalCipher = (encFile.length() - 12L).coerceAtLeast(0L)
+        var consumedCipher = 0L
+        var lastPct = -1
+        var copiedPlain = 0L
 
         return try {
-            FileInputStream(cipherFile).use { fileInRaw ->
-                val fileIn = BufferedInputStream(fileInRaw, BUFFER_SIZE)
+            FileInputStream(encFile).use { rawIn ->
+                val inBuf = BufferedInputStream(rawIn, 512 * 1024)
 
-                val iv = ByteArray(IV_LEN)
-                require(fileIn.read(iv) == IV_LEN) { "Invalid header" }
+                val iv = ByteArray(12)
+                require(inBuf.read(iv) == 12) { "Invalid header" }
 
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+                val countingIn = CountingInputStream(inBuf) { consumed ->
+                    consumedCipher = consumed
+                    if (totalCipher > 0 && onProgress != null) {
+                        val pct = ((consumedCipher.toDouble() / totalCipher.toDouble()) * 100).toInt()
+                        if (pct != lastPct) {
+                            lastPct = pct
+                            onProgress((pct / 100f).coerceIn(0f, 1f))
+                        }
+                    } else {
+                        onProgress?.invoke(null)
+                    }
                 }
 
-                CipherInputStream(fileIn, cipher).use { cis ->
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+                }
+
+                CipherInputStream(countingIn, cipher).use { cis ->
                     context.contentResolver.openOutputStream(dest, "w").use { outRaw ->
                         requireNotNull(outRaw) { "Cannot open output stream for $dest" }
-                        BufferedOutputStream(outRaw, BUFFER_SIZE).use { out ->
-                            val buf = ByteArray(BUFFER_SIZE)
+                        BufferedOutputStream(outRaw, 512 * 1024).use { out ->
+                            val buf = ByteArray(512 * 1024)
                             while (true) {
-                                if (isCancelled?.invoke() == true) {
-                                    Log.w(LOG_TAG, "Repo.exportToUriAndRemove: cancellation requested")
-                                    throw InterruptedException("Export cancelled")
-                                }
+                                if (isCancelled?.invoke() == true) throw InterruptedException("Export cancelled")
                                 val read = cis.read(buf)
                                 if (read <= 0) break
                                 out.write(buf, 0, read)
-                                copied += read
-                                if (totalPlain != null && totalPlain > 0) {
-                                    onProgress?.invoke((copied.toDouble() / totalPlain.toDouble()).toFloat())
-                                } else {
-                                    onProgress?.invoke(null) // indeterminate
-                                }
+                                copiedPlain += read
                             }
                             out.flush()
                         }
@@ -189,85 +229,129 @@ class VaultRepo(private val context: Context) {
                 }
             }
 
+            if (totalCipher > 0) onProgress?.invoke(1f)
+
             // Remove encrypted blob + update index
-            cipherFile.apply { if (exists()) delete() }
+            encFile.apply { if (exists()) delete() }
             saveItems(loadItems().filterNot { it.id == item.id })
-            Log.d(LOG_TAG, "Repo.exportToUriAndRemove: success id=${item.id} plainBytes=$copied")
+            Log.d(LOG_TAG, "Repo.exportToUriAndRemove: success id=${item.id} plainBytes=$copiedPlain")
             true
         } catch (e: InterruptedException) {
-            Log.w(LOG_TAG, "Repo.exportToUriAndRemove: cancelled id=${item.id} after=$copied bytes", e)
+            Log.w(LOG_TAG, "Repo.exportToUriAndRemove: cancelled id=${item.id} after=$copiedPlain bytes", e)
             false
         } catch (t: Throwable) {
-            Log.e(LOG_TAG, "Repo.exportToUriAndRemove: error id=${item.id} after=$copied bytes", t)
+            Log.e(LOG_TAG, "Repo.exportToUriAndRemove: error id=${item.id} after=$copiedPlain bytes", t)
             false
         }
     }
 
-    /** Decrypt to a temp file emitting progress (buffered). */
+
+    /** Decrypt to a temp file emitting progress; returns the completed temp file path. */
+    // --- in VaultRepo.kt ---
+    /** Decrypt to a temp file emitting progress; returns the completed temp file path. */
+    // VaultRepo.kt — drop-in replacement
+
+    /** Decrypt to a temp file emitting progress (works with Android Keystore GCM). */
+    /** Decrypt to a temp file emitting progress based on ciphertext bytes consumed. */
     fun decryptToTempFileProgress(
         item: VaultItem,
         onProgress: ((Float?) -> Unit)? = null
     ): File {
         Log.d(LOG_TAG, "Repo.decryptToTempFileProgress: id=${item.id}")
-        val enc = File(item.encryptedPath)
+        val encFile = File(item.encryptedPath)
+        val totalCipher = (encFile.length() - 12L).coerceAtLeast(0L) // encrypted bytes excluding IV
         val temp = File.createTempFile(item.id, ".dec", context.cacheDir).apply { deleteOnExit() }
 
-        val totalPlain = item.sizeBytes
-        var copied = 0L
+        var copiedPlain = 0L
+        var consumedCipher = 0L
+        var lastPct = -1
 
         try {
-            FileInputStream(enc).use { rawIn ->
-                val inBuf = BufferedInputStream(rawIn, BUFFER_SIZE)
+            FileInputStream(encFile).use { rawIn ->
+                val inBuf = BufferedInputStream(rawIn, 512 * 1024)
 
-                val iv = ByteArray(IV_LEN)
-                require(inBuf.read(iv) == IV_LEN) { "Invalid header" }
+                // Read 12-byte IV header
+                val iv = ByteArray(12)
+                require(inBuf.read(iv) == 12) { "Invalid header" }
 
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
-                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+                // Wrap *after* IV so count starts at 0 for ciphertext only
+                val countingIn = CountingInputStream(inBuf) { consumed ->
+                    consumedCipher = consumed
+                    if (totalCipher > 0 && onProgress != null) {
+                        val pct = ((consumedCipher.toDouble() / totalCipher.toDouble()) * 100).toInt()
+                        if (pct != lastPct) {
+                            lastPct = pct
+                            onProgress((pct / 100f).coerceIn(0f, 1f))
+                        }
+                    } else {
+                        onProgress?.invoke(null) // indeterminate if size unknown
+                    }
                 }
 
-                CipherInputStream(inBuf, cipher).use { cis ->
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+                }
+
+                CipherInputStream(countingIn, cipher).use { cis ->
                     FileOutputStream(temp).use { rawOut ->
-                        BufferedOutputStream(rawOut, BUFFER_SIZE).use { out ->
-                            val buf = ByteArray(BUFFER_SIZE)
-                            while (true) {
-                                val read = cis.read(buf)
-                                if (read <= 0) break
-                                out.write(buf, 0, read)
-                                copied += read
-                                if (totalPlain != null && totalPlain > 0) {
-                                    onProgress?.invoke((copied.toDouble() / totalPlain.toDouble()).toFloat())
-                                } else {
-                                    onProgress?.invoke(null)
-                                }
-                            }
-                            out.flush()
+                        val out = BufferedOutputStream(rawOut, 512 * 1024)
+                        val buf = ByteArray(512 * 1024)
+
+                        while (true) {
+                            val read = cis.read(buf)
+                            if (read <= 0) break
+                            out.write(buf, 0, read)
+                            copiedPlain += read
                         }
+                        out.flush()
                     }
                 }
             }
-            Log.d(LOG_TAG, "Repo.decryptToTempFileProgress: success id=${item.id} temp=${temp.absolutePath} plainBytes=$copied")
+            Log.d(LOG_TAG, "Repo.decryptToTempFileProgress: success id=${item.id} temp=${temp.absolutePath} plainBytes=$copiedPlain")
+            // Ensure we end at 100% if we had a determinate total
+            if (totalCipher > 0) onProgress?.invoke(1f)
             return temp
         } catch (t: Throwable) {
-            Log.e(LOG_TAG, "Repo.decryptToTempFileProgress: error id=${item.id} after=$copied bytes", t)
+            Log.e(LOG_TAG, "Repo.decryptToTempFileProgress: error id=${item.id} after=$copiedPlain bytes", t)
             try { temp.delete() } catch (_: Exception) {}
             throw t
         }
     }
 
+    /** Non-progress helper (images/smaller files). */
     fun decryptToTempFile(item: VaultItem): File {
         Log.d(LOG_TAG, "Repo.decryptToTempFile: id=${item.id}")
-        val enc = File(item.encryptedPath)
+        val encFile = File(item.encryptedPath)
         val temp = File.createTempFile(item.id, ".dec", context.cacheDir).apply { deleteOnExit() }
-        FileInputStream(enc).use { inp ->
-            FileOutputStream(temp).use { out ->
-                // VaultCrypto now uses buffered streams internally
-                VaultCrypto.decryptStream(inp, out, key)
+
+        FileInputStream(encFile).use { rawIn ->
+            val inBuf = BufferedInputStream(rawIn, 512 * 1024)
+
+            val iv = ByteArray(12)
+            require(inBuf.read(iv) == 12) { "Invalid header" }
+
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+                init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+            }
+
+            CipherInputStream(inBuf, cipher).use { cis ->
+                FileOutputStream(temp).use { rawOut ->
+                    val out = BufferedOutputStream(rawOut, 512 * 1024)
+                    val buf = ByteArray(512 * 1024)
+                    while (true) {
+                        val read = cis.read(buf)
+                        if (read <= 0) break
+                        out.write(buf, 0, read)
+                    }
+                    out.flush()
+                }
             }
         }
         Log.d(LOG_TAG, "Repo.decryptToTempFile: success id=${item.id} temp=${temp.absolutePath}")
         return temp
     }
+
+
 
     fun decryptToBytes(item: VaultItem): ByteArray {
         Log.d(LOG_TAG, "Repo.decryptToBytes: id=${item.id}")
