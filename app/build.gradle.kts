@@ -72,5 +72,6 @@ dependencies {
 // JSON for our tiny local index store
     implementation(libs.kotlinx.serialization.json)
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
 }

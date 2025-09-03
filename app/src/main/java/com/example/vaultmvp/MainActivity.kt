@@ -41,6 +41,7 @@ class MainActivity : FragmentActivity() {
         VaultViewModel.Factory(repo = VaultRepo(applicationContext))
     }
 
+
     private val REQUEST_RESTORE = 101
     private val REQUEST_PICK_DOCS = 100
     private var pendingRestoreItem: com.example.vaultmvp.data.VaultItem? = null
@@ -100,6 +101,11 @@ class MainActivity : FragmentActivity() {
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            Log.e(LOG_TAG, "Uncaught on ${t.name}", e)
+        }
+
         super.onCreate(savedInstanceState)
 
         // Prevent screenshots / recents thumbnails

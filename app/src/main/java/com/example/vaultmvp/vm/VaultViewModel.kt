@@ -18,13 +18,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+// in VaultViewModel.kt
 sealed interface Preview {
     data class ImageFile(val file: File) : Preview
-    data class Image(val bytes: ByteArray) : Preview
+    data class ImageUri(val uri: android.net.Uri) : Preview
     data class Pdf(val file: File) : Preview
+    data class PdfUri(val uri: android.net.Uri) : Preview
     data class Video(val file: File) : Preview
+    data class VideoUri(val uri: android.net.Uri) : Preview
     data class Unsupported(val reason: String) : Preview
 }
+
 
 data class ImportUi(
     val phase: ImportPhase = ImportPhase.Idle,
@@ -273,10 +277,23 @@ class VaultViewModel(
     }
 
     // ---------------- Open (preview) with progress ----------------
+    // VaultViewModel.kt (inside class)
+    // inside class VaultViewModel
+    private val STREAM_THRESHOLD = 25L * 1024 * 1024  // 25 MB
+
     fun openAfterAuth(item: VaultItem) {
         Log.d(LOG_TAG, "VM openAfterAuth id=${item.id} name=${item.displayName} mime=${item.mime}")
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // Fast path: big videos stream directly via ContentProvider
+                val size = item.sizeBytes
+                if (item.mime.startsWith("video/") && size != null && size >= STREAM_THRESHOLD) {
+                    val uri = repo.streamingUriFor(item.id)
+                    _ui.update { it.copy(preview = Preview.VideoUri(uri), openProgress = null) }
+                    return@launch
+                }
+
+                // Default path: decrypt to a temp file with progress (images, pdfs, small videos)
                 _ui.update { it.copy(openProgress = 0f) }
                 val startAt = SystemClock.elapsedRealtime()
                 var lastBucket = -1
@@ -308,11 +325,8 @@ class VaultViewModel(
                 val preview = when {
                     item.mime.startsWith("image/") -> Preview.ImageFile(file)
                     item.mime == "application/pdf" -> Preview.Pdf(file)
-                    item.mime.startsWith("video/") -> Preview.Video(file)
-                    else -> {
-                        Log.d(LOG_TAG, "VM unsupported mime for preview: ${item.mime}")
-                        Preview.Unsupported("Office preview not supported in MVP")
-                    }
+                    item.mime.startsWith("video/") -> Preview.Video(file) // small video temp-file path
+                    else -> Preview.Unsupported("Office preview not supported in MVP")
                 }
                 _ui.update { it.copy(preview = preview, openProgress = 1f) }
             } catch (t: Throwable) {
@@ -321,6 +335,8 @@ class VaultViewModel(
             }
         }
     }
+
+
 
     fun closePreview() {
         Log.d(LOG_TAG, "VM closePreview()")

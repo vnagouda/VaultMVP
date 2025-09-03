@@ -21,7 +21,7 @@ object VaultCrypto {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val IV_BYTES = 12
     private const val TAG_BITS = 128
-    private const val BUF = 128 * 1024
+    private const val BUF = 256 * 1024
 
     fun ensureKey(): SecretKey {
         Log.d(LOG_TAG, "Crypto.ensureKey: checking keystore for alias=$KEY_ALIAS")
@@ -57,68 +57,70 @@ object VaultCrypto {
         isCancelled: (() -> Boolean)? = null
     ) {
         Log.d(LOG_TAG, "Crypto.encryptStream: begin; totalBytes=$totalBytes")
+
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-            // ✅ Let Keystore generate a random IV itself
+            // Let keystore create a random IV
             init(Cipher.ENCRYPT_MODE, key)
         }
         val iv = cipher.iv
-        require(iv.size == IV_BYTES) { "Unexpected IV length: ${iv.size}" }
-        output.write(iv) // write IV header you’ll need for decryption
+        require(iv.size == IV_BYTES) { "Unexpected IV: ${iv.size}" }
 
+        // Write IV header
+        output.write(iv)
 
-        val cos = CipherOutputStream(output, cipher)
+        val inBuf = java.io.BufferedInputStream(input, BUF)
+        val outBuf = java.io.BufferedOutputStream(output, BUF)
+        val cos = CipherOutputStream(outBuf, cipher)
+
         val buf = ByteArray(BUF)
         var processed = 0L
-
-        try {
-            while (true) {
-                if (isCancelled?.invoke() == true) {
-                    Log.w(LOG_TAG, "Crypto.encryptStream: cancellation requested")
-                    throw InterruptedException("Encryption cancelled")
-                }
-                val read = input.read(buf)
-                if (read <= 0) break
-                cos.write(buf, 0, read)
-                processed += read
-                if (totalBytes != null && totalBytes > 0 && onProgress != null) {
-                    val p = (processed.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
-                    onProgress(p)
-                }
+        while (true) {
+            if (isCancelled?.invoke() == true) throw InterruptedException("Encryption cancelled")
+            val read = inBuf.read(buf)
+            if (read <= 0) break
+            cos.write(buf, 0, read)
+            processed += read
+            if (totalBytes != null && totalBytes > 0) {
+                onProgress?.invoke((processed.toDouble() / totalBytes.toDouble()).toFloat())
             }
-            Log.d(LOG_TAG, "Crypto.encryptStream: finished; processed=$processed bytes, ivLen=${iv.size}")
-        } catch (t: Throwable) {
-            Log.e(LOG_TAG, "Crypto.encryptStream: error after $processed bytes", t)
-            throw t
-        } finally {
-            try { cos.flush() } catch (_: Throwable) {}
-            try { cos.close() } catch (_: Throwable) {}
         }
+        cos.flush()
+        cos.close() // finalizes tag
+        Log.d(
+            LOG_TAG,
+            "Crypto.encryptStream: finished; processed=$processed bytes, ivLen=${iv.size}"
+        )
     }
 
-    fun decryptStream(input: InputStream, output: OutputStream, key: SecretKey) {
+    fun decryptStream(
+        input: InputStream,
+        output: OutputStream,
+        key: SecretKey,
+    ) {
         Log.d(LOG_TAG, "Crypto.decryptStream: begin")
+
+        val inBuf = java.io.BufferedInputStream(input, BUF)
+
+        // Read IV header
         val iv = ByteArray(IV_BYTES)
-        require(input.read(iv) == IV_BYTES) { "Invalid header" }
+        require(inBuf.read(iv) == IV_BYTES) { "Invalid header" }
+
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
         }
 
+        val cis = CipherInputStream(inBuf, cipher)
+        val outBuf = java.io.BufferedOutputStream(output, BUF)
+
+        val buf = ByteArray(BUF)
         var copied = 0L
-        try {
-            CipherInputStream(input, cipher).use { cis ->
-                val buf = ByteArray(BUF)
-                while (true) {
-                    val read = cis.read(buf)
-                    if (read <= 0) break
-                    output.write(buf, 0, read)
-                    copied += read
-                }
-                output.flush()
-            }
-            Log.d(LOG_TAG, "Crypto.decryptStream: finished; copied=$copied bytes, ivLen=${iv.size}")
-        } catch (t: Throwable) {
-            Log.e(LOG_TAG, "Crypto.decryptStream: error after $copied bytes", t)
-            throw t
+        while (true) {
+            val read = cis.read(buf)
+            if (read <= 0) break
+            outBuf.write(buf, 0, read)
+            copied += read
         }
+        outBuf.flush()
+        Log.d(LOG_TAG, "Crypto.decryptStream: finished; copied=$copied bytes, ivLen=${iv.size}")
     }
 }
