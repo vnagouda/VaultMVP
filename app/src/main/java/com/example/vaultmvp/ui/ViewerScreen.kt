@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.example.vaultmvp.util.LOG_TAG
@@ -303,11 +304,71 @@ private fun PdfViewer(file: File, onDisposeDelete: Boolean = true) {
 
 /* ───────────────────── Video (Media3) ───────────────────── */
 
+// REPLACE ONLY THIS SECTION in ViewerScreen.kt
+
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun VideoPlayer(file: File) {
-    VideoPlayer(uri = Uri.fromFile(file))  // reuse the Uri variant
-    // We do not delete here; VM clears temp files in closePreview().
+private fun VideoPlayer(file: java.io.File) {
+    SecureScreen(true)
+    val context = LocalContext.current
+    val isChunked = remember(file) { detectChunked(file) }
+
+    val exo = remember {
+        androidx.media3.exoplayer.ExoPlayer.Builder(context).build()
+    }
+    DisposableEffect(Unit) { onDispose { exo.release() } }
+
+    LaunchedEffect(file, isChunked) {
+        if (isChunked) {
+            // Play directly from the encrypted blob
+            val dsFactory = androidx.media3.datasource.DataSource.Factory {
+                // Repo holds the SecretKey; expose a small accessor if needed.
+                // Here we re-use the same key your repo uses via a provider.
+                com.example.vaultmvp.data.media.EncryptedFileDataSource(
+                    file = file,
+                    unwrapKey = {
+                        // Retrieve the same SecretKey used in VaultRepo.
+                        // Fast path: call into a small singleton that returns it.
+                        com.example.vaultmvp.crypto.VaultCrypto.ensureKey()
+                    }
+                )
+            }
+            val mediaSource = androidx.media3.exoplayer.source.ProgressiveMediaSource
+                .Factory(dsFactory)
+                .createMediaSource(androidx.media3.common.MediaItem.fromUri(android.net.Uri.fromFile(file)))
+            exo.setMediaSource(mediaSource)
+        } else {
+            // Legacy: normal file playback
+            exo.setMediaItem(androidx.media3.common.MediaItem.fromUri(android.net.Uri.fromFile(file)))
+        }
+        exo.prepare()
+        exo.playWhenReady = true
+    }
+
+    AndroidView(
+        factory = {
+            androidx.media3.ui.PlayerView(it).apply {
+                layoutParams = android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                )
+                player = exo
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }
+
+private fun detectChunked(file: java.io.File): Boolean {
+    return try {
+        java.io.FileInputStream(file).use { fin ->
+            val b = ByteArray(4)
+            if (fin.read(b) != 4) return false
+            java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN).int == 0x50564D56
+        }
+    } catch (_: Throwable) { false }
+}
+
 
 @Composable
 private fun VideoPlayer(uri: Uri) {
