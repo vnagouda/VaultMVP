@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+    body { font-family: system-ui, sans-serif; margin:0; padding:16px; }
+    #log { white-space: pre-wrap; color:#a00; margin:8px 0; }
+    #root { max-width: 900px; margin: 0 auto; }
+</style>
+<div id="log"></div>
+<div id="root">Loading DOCX…</div>
+
+<script src="docx-preview.min.js"></script>
+<script>
+    (function(){
+      const log = (m)=>{ const e=document.getElementById('log'); e.textContent += m + "\n"; console.log(m); };
+
+      window.__vaultStart = async function() {
+        try {
+          if (!window.VaultBridge || !window.VaultBridge.readBase64) { log("VaultBridge not available"); return; }
+          if (!window.mammoth || !window.mammoth.convertToHtml) { log("mammoth not loaded"); return; }
+
+          const b64 = window.VaultBridge.readBase64();
+
+
+          // base64 -> ArrayBuffer
+          const raw = atob(b64);
+          const len = raw.length;
+          const buf = new ArrayBuffer(len);
+          const view = new Uint8Array(buf);
+          for (let i = 0; i < len; i++) view[i] = raw.charCodeAt(i);
+
+          const result = await window.mammoth.convertToHtml({ arrayBuffer: buf });
+          document.getElementById('root').innerHTML = result.value;
+        } catch (e) {
+          log("ERROR: " + (e && e.stack || e));
+        }
+      };
+    })();
+</script>

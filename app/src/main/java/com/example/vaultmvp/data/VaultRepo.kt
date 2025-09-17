@@ -528,6 +528,56 @@ class VaultRepo(private val context: Context) {
         }
     }
 
+    // ADD in VaultRepo.kt
+    fun importBytes(
+        displayName: String,
+        mime: String,
+        bytes: ByteArray,
+        onProgress: ((Float) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null
+    ): VaultItem {
+        Log.d(LOG_TAG, "Repo.importBytes: begin name=$displayName size=${bytes.size}")
+        // Use the same key as other paths (lazy ensures keystore init once)
+        val id = UUID.randomUUID().toString()
+        val outFile = File(context.filesDir, "$id.bin")
+
+        try {
+            ByteArrayInputStream(bytes).use { src ->
+                FileOutputStream(outFile).use { fout ->
+                    val inBuf = BufferedInputStream(src, 512 * 1024)
+                    val outBuf = BufferedOutputStream(fout, 512 * 1024)
+                    VaultCrypto.encryptStream(
+                        input = inBuf,
+                        output = outBuf,
+                        key = key,
+                        totalBytes = bytes.size.toLong(),
+                        onProgress = { p -> onProgress?.invoke(p.coerceIn(0f, 1f)) },
+                        isCancelled = { isCancelled?.invoke() == true }
+                    )
+                    outBuf.flush()
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e(LOG_TAG, "Repo.importBytes: error, deleting partial", t)
+            runCatching { outFile.delete() }
+            throw t
+        }
+
+        val item = VaultItem(
+            id = id,
+            displayName = displayName,
+            mime = mime,
+            sizeBytes = bytes.size.toLong(),
+            encryptedPath = outFile.absolutePath,
+            createdAt = System.currentTimeMillis(),
+            originalFileName = displayName,
+            originalParentUri = null
+        )
+        Log.d(LOG_TAG, "Repo.importBytes: success id=$id")
+        return item
+    }
+
+
     /** Decrypt a chunked blob and stream directly to a SAF URI with progress/cancel. */
     @RequiresApi(Build.VERSION_CODES.O)
     private fun decryptChunkedToUri(

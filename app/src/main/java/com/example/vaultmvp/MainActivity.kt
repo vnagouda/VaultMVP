@@ -2,12 +2,13 @@
 package com.example.vaultmvp
 
 import android.content.Intent
-import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,6 +28,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.vaultmvp.data.VaultRepo
 import com.example.vaultmvp.nav.Routes
+import com.example.vaultmvp.ui.CameraCaptureScreen
 import com.example.vaultmvp.ui.ImportProgressScreen
 import com.example.vaultmvp.ui.RestoreProgressScreen
 import com.example.vaultmvp.ui.VaultScreen
@@ -99,6 +101,7 @@ class MainActivity : FragmentActivity() {
         )
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
 
@@ -145,7 +148,8 @@ class MainActivity : FragmentActivity() {
                                         requireAuthThen("Unlock to view") {
                                             nav.navigate("viewer/${item.id}")
                                         }
-                                    }
+                                    },
+                                    onOpenCamera = { nav.navigate("camera") }
                                 )
                             }
 
@@ -177,6 +181,11 @@ class MainActivity : FragmentActivity() {
                                     onBackToHome = { nav.popBackStack() }
                                 )
                             }
+
+                            composable("camera") {
+                                CameraCaptureScreen(vm = vm, onClose = { nav.popBackStack() })
+                            }
+
                         }
 
                         // Full-screen mask while locked / prompting
@@ -219,6 +228,7 @@ class MainActivity : FragmentActivity() {
         startActivityForResult(intent, REQUEST_PICK_DOCS)
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
 

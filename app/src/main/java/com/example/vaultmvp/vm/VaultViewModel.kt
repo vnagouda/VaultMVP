@@ -1,8 +1,10 @@
 package com.example.vaultmvp.vm
 
 import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.vaultmvp.data.VaultItem
@@ -22,8 +24,11 @@ sealed interface Preview {
     data class ImageFile(val file: File) : Preview
     data class Pdf(val file: File) : Preview
     data class Video(val file: File) : Preview
+    data class OfficeDoc(val item: VaultItem) : Preview   // NEW for Word/Excel/PPT
+    data class TextDoc(val item: VaultItem) : Preview     // NEW for .txt/.csv/etc.
     data class Unsupported(val reason: String) : Preview
 }
+
 
 data class ImportUi(
     val phase: ImportPhase = ImportPhase.Idle,
@@ -76,6 +81,7 @@ class VaultViewModel(
     fun clearExportUi() { _ui.update { it.copy(export = ExportUi()) } }
 
     // ---------------- Import (encrypt) ----------------
+    @RequiresApi(Build.VERSION_CODES.O)
     fun importAll(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -160,6 +166,7 @@ class VaultViewModel(
     }
 
     // ---------------- Restore (export) ----------------
+    @RequiresApi(Build.VERSION_CODES.O)
     fun exportToUriAndRemove(item: VaultItem, dest: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             cancelExport = false
@@ -234,6 +241,7 @@ class VaultViewModel(
     }
 
     // ---------------- Open (preview) with progress ----------------
+    @RequiresApi(Build.VERSION_CODES.O)
     fun openAfterAuth(item: VaultItem) {
         Log.d(LOG_TAG, "VM openAfterAuth id=${item.id} name=${item.displayName} mime=${item.mime}")
         viewModelScope.launch(Dispatchers.IO) {
@@ -270,8 +278,27 @@ class VaultViewModel(
                     item.mime.startsWith("image/") -> Preview.ImageFile(file)
                     item.mime == "application/pdf" -> Preview.Pdf(file)
                     item.mime.startsWith("video/") -> Preview.Video(file)
-                    else -> Preview.Unsupported("Office preview not supported in MVP")
+
+                    // Office docs: Word, Excel, PowerPoint
+                    item.mime.contains("officedocument") ||
+                            item.displayName.endsWith(".docx", true) ||
+                            item.displayName.endsWith(".xlsx", true) ||
+                            item.displayName.endsWith(".pptx", true) -> {
+                        Preview.OfficeDoc(item)   // we pass the VaultItem, not a temp File
+                    }
+
+                    // Plain text-like docs
+                    item.displayName.endsWith(".txt", true) ||
+                            item.displayName.endsWith(".csv", true) ||
+                            item.displayName.endsWith(".json", true) ||
+                            item.displayName.endsWith(".md", true) ||
+                            item.displayName.endsWith(".xml", true) -> {
+                        Preview.TextDoc(item)
+                    }
+
+                    else -> Preview.Unsupported("Unsupported format: ${item.displayName}")
                 }
+
                 _ui.update { it.copy(preview = preview, openProgress = null) }
             } catch (t: Throwable) {
                 Log.e(LOG_TAG, "VM openAfterAuth decrypt failed", t)
@@ -305,6 +332,61 @@ class VaultViewModel(
     private fun safeDelete(path: String) {
         try { File(path).delete() } catch (_: Exception) {}
     }
+
+    // ADD in VaultViewModel.kt (inside VaultViewModel)
+    fun importCapturedPhoto(bytes: ByteArray, name: String = "Photo_${System.currentTimeMillis()}.jpg") {
+        viewModelScope.launch(Dispatchers.IO) {
+            cancelEncrypt = false
+            val displayName = name
+            val startAt = SystemClock.elapsedRealtime()
+            var lastBucket = -1
+
+            _ui.update { it.copy(import = ImportUi(phase = ImportPhase.Encrypting, fileName = displayName, progress = 0f)) }
+
+            try {
+                val added = repo.importBytes(
+                    displayName = displayName,
+                    mime = "image/jpeg",
+                    bytes = bytes,
+                    onProgress = { p ->
+                        val clamped = p.coerceIn(0f, 1f)
+                        val elapsed = SystemClock.elapsedRealtime() - startAt
+                        val allowed = ((elapsed.toFloat() / 900f).coerceIn(0f, 1f) * 0.97f)
+                        val gated = if (clamped <= allowed) clamped else allowed
+
+                        val bucket = (gated * 100).toInt() / 10
+                        if (bucket != lastBucket) { lastBucket = bucket; Log.d(LOG_TAG, "VM capture progress $displayName: ${bucket * 10}%") }
+                        _ui.update { st -> st.copy(import = st.import.copy(progress = gated)) }
+                    },
+                    isCancelled = { cancelEncrypt }
+                )
+
+                // Finalize UX (same style as importAll)
+                val finalizeStart = SystemClock.elapsedRealtime()
+                _ui.update { it.copy(import = it.import.copy(phase = ImportPhase.Finalizing, progress = null)) }
+                while (SystemClock.elapsedRealtime() - finalizeStart < 700L) {
+                    if (cancelEncrypt) {
+                        _ui.update { it.copy(import = ImportUi(phase = ImportPhase.Cancelled, fileName = displayName)) }
+                        delay(400); _ui.update { it.copy(import = ImportUi()) }
+                        return@launch
+                    }
+                    delay(50)
+                }
+
+                val newList = ui.value.items + added
+                repo.saveItems(newList)
+                _ui.update { it.copy(items = newList, import = ImportUi(phase = ImportPhase.Success, fileName = displayName, progress = 1f)) }
+                delay(600)
+                _ui.update { it.copy(import = ImportUi()) }
+            } catch (t: Throwable) {
+                Log.e(LOG_TAG, "VM importCapturedPhoto failed", t)
+                _ui.update { it.copy(import = ImportUi(phase = ImportPhase.Error, fileName = displayName, error = t.message)) }
+                delay(800)
+                _ui.update { it.copy(import = ImportUi()) }
+            }
+        }
+    }
+
 
     class Factory(private val repo: VaultRepo) : androidx.lifecycle.ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

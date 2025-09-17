@@ -1,0 +1,218 @@
+<!doctype html>
+<meta charset="utf-8"/>
+<meta http-equiv="Content-Security-Policy" content="script-src * 'unsafe-inline' 'unsafe-eval';">
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PPTX Preview</title>
+<style>
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex; flex-direction: column;
+      background: #f0f0f0;
+    }
+    header, footer { padding: 10px 12px; display: flex; align-items: center; gap: 8px; background: #fff; }
+    header { border-bottom: 1px solid #ddd; }
+    footer { border-top: 1px solid #ddd; justify-content: space-between; }
+    #title { font-weight: 600; flex: 1 }
+    #counter { opacity: .7 }
+    #log { white-space: pre-wrap; color: #a00; padding: 8px 12px; display: none; }
+    /* Stage centers the slide */
+    #stage {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      padding: 12px; overflow: hidden; /* we’ll scroll inside slide */
+    }
+    /* Slide gets explicit width/height set by JS (16:9) */
+    .slide {
+      position: relative;
+      background: #fff; border: 1px solid #ccc; border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.08);
+      overflow: auto; /* scroll content if smaller than slide */
+      /* width/height will be set by layout() */
+    }
+    .s-title { font-size: 1.2rem; font-weight: 700; margin: 16px 16px 8px; }
+    .s-text  { margin: 8px 16px; line-height: 1.5; white-space: pre-wrap; }
+    .s-img   { display:block; max-width: calc(100% - 32px); height:auto; margin: 12px 16px; object-fit: contain; }
+    button { padding: 8px 14px; border-radius: 999px; border: 1px solid #ddd; background: #fff; }
+    button:disabled { opacity: .5; }
+</style>
+
+<!-- Local JSZip -->
+<script src="jszip.min.js"></script>
+
+<header>
+    <div id="title">Loading presentation…</div>
+    <div id="counter"></div>
+</header>
+
+<div id="stage"><div class="slide"><div class="s-text" style="margin:16px">Loading…</div></div></div>
+<div id="log"></div>
+
+<footer>
+    <div>
+        <button id="prevBtn" disabled>Prev</button>
+        <button id="nextBtn" disabled>Next</button>
+    </div>
+    <button id="toggleLog">Logs</button>
+</footer>
+
+<script>
+    (function(){
+      const titleEl = document.getElementById('title');
+      const counterEl = document.getElementById('counter');
+      const stage = document.getElementById('stage');
+      const logEl = document.getElementById('log');
+      const prevBtn = document.getElementById('prevBtn');
+      const nextBtn = document.getElementById('nextBtn');
+      document.getElementById('toggleLog').onclick = () =>
+        logEl.style.display = (logEl.style.display === 'none' ? 'block' : 'none');
+
+      const log = (m)=>{ console.log(m); logEl.textContent += m + "\n"; };
+      window.addEventListener('error', e => log("JS ERROR: " + (e.error && e.error.stack || e.message)));
+
+      function b64toU8(b64){
+        const bin = atob(b64); const len = bin.length; const u8 = new Uint8Array(len);
+        for (let i=0;i<len;i++) u8[i] = bin.charCodeAt(i);
+        return u8;
+      }
+      function parseXml(xmlStr){ return new DOMParser().parseFromString(xmlStr, "application/xml"); }
+      function escapeHtml(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+      function resolvePath(basePath, relTarget){
+        const baseParts = basePath.split("/"); baseParts.pop();
+        const targetParts = relTarget.split("/");
+        const out = [];
+        for (const part of [...baseParts, ...targetParts]){
+          if (!part || part === ".") continue;
+          if (part === "..") out.pop(); else out.push(part);
+        }
+        return out.join("/");
+      }
+
+      async function renderSlide(zip, slidePath, idx){
+        const slideXml = await zip.file(slidePath).async("string").catch(()=>null);
+        if (!slideXml) return { html: `<div class="slide"><div class="s-text" style="margin:16px">(Missing slide XML)</div></div>` };
+
+        const doc = parseXml(slideXml);
+        const runs = Array.from(doc.getElementsByTagNameNS("*","t"));
+        const title = (runs[0] && runs[0].textContent.trim()) || `Slide ${idx+1}`;
+        const bodyText = runs.slice(1).map(r => r.textContent || "").join("\n").trim();
+
+        // images
+        const embedIds = Array.from(slideXml.matchAll(/r:embed="(rId\d+)"/g)).map(m=>m[1]);
+        const images = [];
+        if (embedIds.length){
+          const sFile = slidePath.split("/").pop();
+          const relsPath = slidePath.replace(sFile, `_rels/${sFile}.rels`);
+          const relsXml = await zip.file(relsPath)?.async("string").catch(()=>null);
+          if (relsXml){
+            const relMap = Object.fromEntries(
+              Array.from(relsXml.matchAll(/Id="(rId\d+)".*?Target="([^"]+)"/g)).map(m=>[m[1], m[2]])
+            );
+            for (const rid of embedIds){
+              const relTarget = relMap[rid]; if (!relTarget) continue;
+              const mediaPath = resolvePath(slidePath, relTarget).replace(/^\/+/,"");
+              try {
+                const base64 = await zip.file(mediaPath).async("base64");
+                const ext = (mediaPath.split(".").pop() || "png").toLowerCase();
+                images.push({ ext, b64: base64 });
+              } catch(e){ log(`Image load failed: ${mediaPath}`); }
+            }
+          }
+        }
+
+        // assemble HTML
+        let html = `<div class="slide">`;
+        html += `<div class="s-title">${escapeHtml(title)}</div>`;
+        if (bodyText){
+          const blocks = bodyText.split(/\n{2,}/).map(x=>x.trim()).filter(Boolean);
+          for (const b of blocks) html += `<div class="s-text">${escapeHtml(b)}</div>`;
+        } else {
+          html += `<div class="s-text" style="opacity:.7; margin:16px">(No text)</div>`;
+        }
+        for (const img of images){
+          html += `<img class="s-img" src="data:image/${img.ext};base64,${img.b64}"/>`;
+        }
+        html += `</div>`;
+        return { html };
+      }
+
+      async function parsePresentation(zip){
+        const presXml = await zip.file("ppt/presentation.xml").async("string");
+        const relsXml = await zip.file("ppt/_rels/presentation.xml.rels").async("string");
+        const slideRIds = Array.from(presXml.matchAll(/r:id="(rId\d+)"/g)).map(m=>m[1]);
+        const relTargets = Object.fromEntries(
+          Array.from(relsXml.matchAll(/Id="(rId\d+)".*?Target="([^"]+)"/g)).map(m=>[m[1], m[2]])
+        );
+        return slideRIds
+          .map(rid => relTargets[rid])
+          .filter(Boolean)
+          .map(t => "ppt/" + t.replace(/^\/+/,""));
+      }
+
+      let slides = [];
+      let current = 0;
+
+      function updateNav(){
+        counterEl.textContent = slides.length ? `${current+1} / ${slides.length}` : "";
+        prevBtn.disabled = current <= 0;
+        nextBtn.disabled = current >= slides.length - 1;
+      }
+      function showSlide(i){
+        current = Math.max(0, Math.min(i, slides.length-1));
+        stage.innerHTML = slides[current]?.html || `<div class="slide"><div class="s-text" style="margin:16px">(No slide)</div></div>`;
+        updateNav();
+        layout(); // ← ensure the newly injected slide gets sized
+      }
+      prevBtn.onclick = ()=> showSlide(current - 1);
+      nextBtn.onclick = ()=> showSlide(current + 1);
+
+      // ---- Layout: fit a 16:9 slide in the available viewport (centered) ----
+      function layout(){
+        const header = document.querySelector('header');
+        const footer = document.querySelector('footer');
+        const slide  = document.querySelector('.slide');
+        if (!slide) return;
+
+        const availH = window.innerHeight - header.offsetHeight - footer.offsetHeight - 24/*stage padding*/;
+        const availW = window.innerWidth  - 24/*stage padding*/;
+
+        // cap width for readability but fill as much as possible
+        const maxW = Math.min(1280, availW);
+        // try to fit inside available height as well
+        const wByH  = Math.min(maxW, Math.floor(availH * 16 / 9));
+        const width = Math.max(280, wByH);       // never too tiny
+        const height = Math.floor(width * 9 / 16);
+
+        slide.style.width  = width + "px";
+        slide.style.height = height + "px";
+      }
+      window.addEventListener('resize', layout);
+
+      // ---- Entry point called from Android after page loads ----
+      window.__vaultStart = async function(){
+        try {
+          const b64 = window.VaultBridge.readBase64();
+          const zip = await JSZip.loadAsync(b64toU8(b64).buffer);
+          const slidePaths = await parsePresentation(zip);
+
+          if (!slidePaths.length){
+            titleEl.textContent = "PPTX (no slides)";
+            stage.innerHTML = `<div class="slide"><div class="s-text" style="margin:16px">No slides found.</div></div>`;
+            layout();
+            return;
+          }
+
+          slides = [];
+          for (let i=0;i<slidePaths.length;i++){
+            slides.push(await renderSlide(zip, slidePaths[i], i));
+          }
+          titleEl.textContent = "PPTX Preview";
+          showSlide(0);      // also triggers layout()
+        } catch(e){
+          log("Fatal: " + (e && e.stack || e));
+          stage.innerHTML = `<div class="slide"><div class="s-text" style="margin:16px">Unable to render this PPTX</div></div>`;
+          layout();
+        }
+      };
+    })();
+</script>

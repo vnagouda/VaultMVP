@@ -9,18 +9,22 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.view.WindowManager
 import android.widget.FrameLayout
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -43,6 +47,7 @@ private enum class ViewPhase { Loading, SuccessAnim, Content }
 
 /* ───────────────────── Orchestrator screen ───────────────────── */
 
+@RequiresApi(Build.VERSION_CODES.O)
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ViewerScreen(
@@ -55,6 +60,9 @@ fun ViewerScreen(
 
     // kick off decrypt+open
     LaunchedEffect(itemId) { item?.let { vm.openAfterAuth(it) } }
+
+    // ADD THIS LINE:
+    val repo = rememberVaultRepo()
 
     Scaffold(
         topBar = {
@@ -76,7 +84,6 @@ fun ViewerScreen(
         ) {
             when (val p = ui.preview) {
                 null -> {
-                    // still opening
                     EncryptProgressOverlay(
                         title = item?.let { "Opening ${it.displayName}" } ?: "Opening…",
                         progress = ui.openProgress,
@@ -90,15 +97,31 @@ fun ViewerScreen(
                     PdfViewer(p.file)
                 }
                 is Preview.Video -> {
-                    VideoPlayer(p.file)   // your existing player that takes a File
+                    VideoPlayer(p.file)
+                }
+                is Preview.OfficeDoc -> {
+                    // Use our new router that handles DOCX/XLSX/PPTX with WebView
+                    AnyDocumentViewer(item = p.item, repo = repo, modifier = Modifier.fillMaxSize())
+                }
+                is Preview.TextDoc -> {
+                    AnyDocumentViewer(item = p.item, repo = repo, modifier = Modifier.fillMaxSize())
                 }
                 is Preview.Unsupported -> {
                     androidx.compose.material3.Text(p.reason)
                 }
             }
+
         }
+
     }
 }
+
+@Composable
+private fun rememberVaultRepo(): com.example.vaultmvp.data.VaultRepo {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    return remember(ctx) { com.example.vaultmvp.data.VaultRepo(ctx) }
+}
+
 
 
 /* ───────────────────── Helpers: secure & decoders ───────────────────── */
@@ -271,33 +294,77 @@ private fun ImageViewer(bytes: ByteArray) { ... }
 /* ───────────────────── PDF ───────────────────── */
 
 @Composable
-private fun PdfViewer(file: File, onDisposeDelete: Boolean = true) {
-    SecureScreen(true)
-    val pages by produceState(initialValue = emptyList<Bitmap>(), file) {
-        val list = mutableListOf<Bitmap>()
-        val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-        val pdf = PdfRenderer(pfd)
-        repeat(pdf.pageCount) { i ->
-            pdf.openPage(i).use { page ->
-                val bmp = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.RGB_565)
-                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                list.add(bmp)
-            }
-        }
-        pdf.close(); pfd.close()
-        value = list
+fun PdfViewer(tempPdfFile: java.io.File, modifier: Modifier = Modifier) {
+    // Open once, close when leaving the screen
+    val doc = remember(tempPdfFile) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            com.example.vaultmvp.ui.pdf.PdfDoc.open(tempPdfFile)
+        } else null
     }
-    DisposableEffect(Unit) { onDispose { if (onDisposeDelete) file.delete() } }
+    DisposableEffect(doc) {
+        onDispose { doc?.close() }
+    }
 
-    LazyColumn(Modifier.fillMaxSize()) {
-        itemsIndexed(pages) { idx, b ->
-            Image(
-                bitmap = b.asImageBitmap(),
-                contentDescription = "Page ${idx + 1}",
+    if (doc == null) {
+        // Fallback for very old APIs (unlikely for your minSdk)
+        androidx.compose.material3.Text("PDF preview not supported on this device", modifier)
+        return
+    }
+
+    val pageCount = doc.pageCount
+
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenWidthPx = with(density) { config.screenWidthDp.dp.roundToPx() }
+
+    // Simple lazy list of pages with light prefetch
+    androidx.compose.foundation.lazy.LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)
+    ) {
+        items(
+            count = pageCount,
+            key = { it }
+        ) { pageIndex ->
+            // Produce each page bitmap off the main thread
+            val imageState = produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, pageIndex, screenWidthPx) {
+                value = null
+                val bmp = doc.renderPageToBitmap(pageIndex, screenWidthPx)
+                // Convert to Compose type
+                value = bmp.asImageBitmap()
+                // You can recycle the underlying Bitmap later if you keep it; here we let ImageBitmap own it.
+            }
+
+            // Optional prefetch next page to keep scrolling smooth
+            LaunchedEffect(pageIndex) {
+                if (pageIndex + 1 < pageCount) {
+                    // fire and forget; cache handled by OS
+                    doc.renderPageToBitmap(pageIndex + 1, screenWidthPx)
+                }
+            }
+
+            androidx.compose.foundation.layout.Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp)
-            )
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                val img = imageState.value
+                if (img == null) {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                    )
+                } else {
+                    androidx.compose.foundation.Image(
+                        bitmap = img,
+                        contentDescription = "PDF page ${pageIndex + 1}",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                    )
+                }
+            }
         }
     }
 }

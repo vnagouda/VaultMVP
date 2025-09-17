@@ -1,0 +1,141 @@
+<!-- app/src/main/assets/viewers/xlsx/index.html -->
+<!doctype html>
+<meta charset="utf-8"/>
+<meta http-equiv="Content-Security-Policy" content="script-src * 'unsafe-inline' 'unsafe-eval';">
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>XLSX Preview</title>
+<style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin:0; padding:12px; }
+    #tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px }
+    .tab { padding:6px 10px; border:1px solid #ddd; border-radius:999px; cursor:pointer; user-select:none }
+    .tab.active { background:#eee }
+    table { border-collapse: collapse; width: 100% }
+    td, th { border:1px solid #ddd; padding:.4rem; vertical-align:top; white-space:pre-wrap }
+    thead th { background:#f5f5f5 }
+    #log { white-space: pre-wrap; color:#a00; margin:8px 0 }
+</style>
+
+<!-- Use the local copy to avoid CDN MIME issues -->
+<script src="xlsx.full.min.js"></script>
+
+<div id="log"></div>
+<div id="tabs"></div>
+<div id="root">Loading Excel…</div>
+
+<script>
+    (function(){
+      const logEl = document.getElementById('log');
+      const log = (m) => { console.log(m); logEl.textContent += m + "\n"; };
+
+      window.addEventListener('error', e => log("JS ERROR: " + (e.error && e.error.stack || e.message)));
+
+      function b64toU8(b64){
+        const bin = atob(b64); const len = bin.length; const u8 = new Uint8Array(len);
+        for (let i=0;i<len;i++) u8[i] = bin.charCodeAt(i);
+        return u8;
+      }
+
+      // Build !ref if missing, to avoid sheet_to_html crash
+      function ensureRef(ws){
+        if (ws['!ref']) return;
+        const cells = Object.keys(ws).filter(k => k[0] !== '!');
+        if (cells.length === 0) { ws['!ref'] = "A1:A1"; return; }
+        let minR = 1e9, minC = 1e9, maxR = 0, maxC = 0;
+        for (const a of cells) {
+          const c = XLSX.utils.decode_cell(a);
+          if (c.r < minR) minR = c.r; if (c.c < minC) minC = c.c;
+          if (c.r > maxR) maxR = c.r; if (c.c > maxC) maxC = c.c;
+        }
+        ws['!ref'] = XLSX.utils.encode_range({ s:{r:minR,c:minC}, e:{r:maxR,c:maxC} });
+      }
+
+      function csvToTable(csv, name){
+        const rows = csv.split(/\r?\n/).filter(r => r.length || rows?.length===0);
+        let html = `<h3>${name}</h3><table><tbody>`;
+        for (const r of rows) {
+          if (!r) continue;
+          const cols = r.split(','); // simple split; SheetJS already quotes fields in CSV
+          html += "<tr>";
+          for (const c of cols) {
+            const safe = c.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+            html += `<td>${safe}</td>`;
+          }
+          html += "</tr>";
+        }
+        html += "</tbody></table>";
+        return html;
+      }
+
+      function safeSheetToHtml(ws, name){
+        try {
+          ensureRef(ws);
+          return XLSX.utils.sheet_to_html(ws, { header:`<h3>${name}</h3>` });
+        } catch(e) {
+          log("sheet_to_html failed: " + e);
+          try {
+            const csv = XLSX.utils.sheet_to_csv(ws);
+            return csvToTable(csv, name);
+          } catch(e2) {
+            log("sheet_to_csv failed: " + e2);
+            return `<h3>${name}</h3><p>(Empty or unsupported sheet)</p>`;
+          }
+        }
+      }
+
+      function renderWorkbook(wb) {
+        const tabs = document.getElementById('tabs');
+        const root = document.getElementById('root');
+        tabs.innerHTML = ""; root.innerHTML = "";
+
+        function renderSheet(name){
+          const ws = wb.Sheets[name];
+          root.innerHTML = safeSheetToHtml(ws, name);
+          for (const b of tabs.querySelectorAll('.tab')) b.classList.toggle('active', b.textContent === name);
+        }
+
+        wb.SheetNames.forEach((name, idx) => {
+          const btn = document.createElement('button');
+          btn.className = 'tab' + (idx===0 ? ' active' : '');
+          btn.textContent = name;
+          btn.onclick = () => renderSheet(name);
+          tabs.appendChild(btn);
+          if (idx === 0) renderSheet(name);
+        });
+        //log("Render OK. Sheets: " + wb.SheetNames.join(", "));
+      }
+
+      window.__vaultStart = function(){
+        if (!window.VaultBridge || !window.VaultBridge.readBase64) {
+          document.getElementById('root').textContent = "Bridge unavailable"; return;
+        }
+        try {
+          const b64 = window.VaultBridge.readBase64();
+          //log("Got base64, length=" + b64.length);
+
+          // Try ArrayBuffer -> Binary -> Base64
+          try {
+            const u8 = b64toU8(b64);
+            const wb = XLSX.read(u8.buffer, { type:"array" });
+            renderWorkbook(wb); return;
+          } catch (e1) { log("Parse(array) failed: " + e1); }
+
+          try {
+            const bin = atob(b64);
+            const wb = XLSX.read(bin, { type:"binary" });
+            renderWorkbook(wb); return;
+          } catch (e2) { log("Parse(binary) failed: " + e2); }
+
+          try {
+            const wb = XLSX.read(b64, { type:"base64" });
+            renderWorkbook(wb); return;
+          } catch (e3) { log("Parse(base64) failed: " + e3); }
+
+          document.getElementById('root').textContent = "Unable to render this Excel file.";
+        } catch (e) {
+          log("Fatal: " + (e && e.stack || e));
+          document.getElementById('root').textContent = "Unable to render this Excel file.";
+        }
+      };
+    })();
+</script>

@@ -23,14 +23,13 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
@@ -42,7 +41,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,7 +55,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.vaultmvp.data.VaultItem
 import com.example.vaultmvp.util.LOG_TAG
 import com.example.vaultmvp.vm.VaultViewModel
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile as AutoMirroredInsertDriveFile
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -65,7 +62,8 @@ fun VaultScreen(
     vm: VaultViewModel,
     onPickFiles: () -> Unit,
     onRestore: (VaultItem) -> Unit,
-    onOpenItem: (VaultItem) -> Unit
+    onOpenItem: (VaultItem) -> Unit,
+    onOpenCamera: () -> Unit
 ) {
     // NOTE: No biometric logic here. MainActivity handles it + shows the PrivacyShield.
     val state = vm.ui.collectAsStateWithLifecycle().value
@@ -116,18 +114,18 @@ fun VaultScreen(
                     IconButton(onClick = { searchOpen = !searchOpen }) {
                         Icon(Icons.Filled.Search, contentDescription = "Search")
                     }
-                    IconButton(onClick = { /* TODO menu */ }) {
-                        Icon(Icons.Filled.Menu, contentDescription = "Menu")
+                    IconButton(onClick = onPickFiles) {
+                        Icon(Icons.Filled.Add, contentDescription = "Menu")
                     }
                 }
             )
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = onPickFiles,
+                onClick = onOpenCamera,
                 modifier = Modifier.navigationBarsPadding()
             ) {
-                Icon(Icons.Filled.Add, contentDescription = "Import")
+                Icon(Icons.Filled.CameraAlt, contentDescription = "Import")
             }
         }
     ) { pad ->

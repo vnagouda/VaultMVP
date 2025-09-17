@@ -74,4 +74,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("io.coil-kt:coil-compose:2.7.0")
 
+    val camerax = "1.5.0"
+    implementation ("androidx.camera:camera-core:$camerax")
+    implementation ("androidx.camera:camera-camera2:$camerax")
+    implementation ("androidx.camera:camera-lifecycle:$camerax")
+    implementation ("androidx.camera:camera-view:$camerax")
+
 }
